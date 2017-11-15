@@ -33,16 +33,29 @@ def expected_improvement(mean_values, std_values, opt_values):
     EI = improvement * norm.cdf(improvement / std_values) + std_values * norm.pdf(improvement / std_values)
     return EI
 
-
-def get_new_point(model, lb, ub, data=None, multistart=10, criterion='ei', k=1, random_state=None):
+def get_new_point(model, lower_bounds, upper_bounds, 
+                  data=None, multistart=10, criterion='ei', k=1, random_state=None):
+    """
+    Parameters:
+        model - GP model of the objective function
+        lower_bounds, upper_bounds - array-like, lower and upper bounds of x
+        data - tuple(x_training, y_training)
+        multistart - number of multistart runs
+        criterion - aqcuisition function, by default log EI
+        k - parameter of the LowerConfidenceBound function
+        random_state - np.random.RandomState
+        
+    Returns
+        tuple - argmin of the objective function and min value of the objective 
+    """
     if random_state is None:
         random_state = np.random.RandomState()
 
-    lb = np.array(lb).reshape(1, -1)
-    ub = np.array(ub).reshape(1, -1)
-    x_random = random_state.uniform(size=(multistart, np.array(lb).ravel().shape[0]))
-    x_random *= ub - lb
-    x_random += lb
+    lower_bounds = np.array(lower_bounds).reshape(1, -1)
+    upper_bounds = np.array(upper_bounds).reshape(1, -1)
+    
+    # 1. Generate inital X points (number of points == multistart) in [lower_bounds, upper_bounds]
+    random_initial_points = np.random.rand(multistart, len(lower_bounds)) * (upper_bounds - lower_bounds) + lower_bounds
 
     def objective(x):
         if x.ndim == 1:
@@ -52,37 +65,43 @@ def get_new_point(model, lb, ub, data=None, multistart=10, criterion='ei', k=1, 
         if criterion == 'ei':
             return -log_expected_improvement(mean_values, std_values, data[1].min())
         elif criterion == 'lcb':
-            return lower_confidence_bound(mean_values, std_values, k)
+            return lcb(mean_values, std_values, params)
         else:
             raise NotImplementedError('Criterion is not implemented!')
 
-    criterion_value = objective(x_random)
-
+    criterion_value = objective(random_initial_points)
+    
+    # 2. From each points from x_random run L-BFGS optimization algorithm, 
+    #    choose the best result and return it
+    #    Use function minimize: minimize(objective, x_init, method='L-BFGS-B',
+    #                                    bounds=np.vstack((lb, ub)).T)
+    #    it returns object with fields 'fun' - optimum function value, 'x' - argmin.
     best_result = None
     best_value = np.inf
-    for x_init in x_random:
-        optimization_result = minimize(objective, x_init, method='L-BFGS-B', bounds=np.vstack((lb, ub)).T)
-
-        if optimization_result.fun < best_value:
-            best_result = optimization_result
-            best_value = best_result.fun[0]
+    for random_point in random_initial_points:
+        result = minimize(objective, random_point, method='L-BFGS-B',
+                          bounds=np.vstack((lower_bounds, upper_bounds)).T)
+        if result.fun < best_value:
+            best_value = result.fun
+            best_result = result
+    
     return best_result.x, best_result.fun
 
-
-def optimization_step(x_train, y_train, kernel, objective, lb=None, ub=None, criterion='ei', k=1, plot=False):
-    model = GPy.models.GPRegression(x_train, y_train, kernel)
+def optimization_step(training_points, training_values, 
+                      kernel, objective, 
+                      lower_bounds=None, upper_bounds=None, 
+                      criterion='ei', k=1):
+    model = GPy.models.GPRegression(training_points, training_values, kernel)
     model.optimize_restarts(num_restarts=10, verbose=False)
 
-    x_new, criterion_value = get_new_point(model, data=(x_train, y_train), lb=lb, ub=ub, criterion=criterion, k=k)
-    if plot:
-        plot1d(x_train, y_train, model, objective, x_new, criterion_value)
-        pyplot.show()
+    new_point, criterion_value = get_new_point(model, data=(training_points, training_values), 
+                                           lower_bounds=lower_bounds, upper_bounds=upper_bounds, 
+                                           criterion=criterion, k=k)
 
-    x_new = x_new.reshape(1, -1)
-    x_train = np.vstack([x_train, x_new])
-    y_train = np.vstack([y_train, np.asarray(objective(x_new)).reshape(1, -1)])
-    return x_train, y_train, model
-
+    new_point = new_point.reshape(1, -1)
+    training_points = np.vstack([training_points, new_point])
+    training_values = np.vstack([training_values, np.asarray(objective(new_point)).reshape(1, -1)])
+    return training_points, training_values, model
 
 def plot1d(x_train, y_train, model, objective, x_new, criterion_value):
     x_grid = np.linspace(0, 1, 100).reshape(-1, 1)
