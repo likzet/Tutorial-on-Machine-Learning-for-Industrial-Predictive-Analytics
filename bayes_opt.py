@@ -14,7 +14,7 @@ def lower_confidence_bound(mean_values, std_values, coefficient=2):
 
 def log_expected_improvement(mean_values, variance_values, opt_value):
     estimated_values = mean_values.ravel()
-    eps = 0.05/len(estimated_values)
+    eps = 0.05 / len(estimated_values)
 
     delta = (opt_value - estimated_values - eps).ravel()
 
@@ -22,7 +22,7 @@ def log_expected_improvement(mean_values, variance_values, opt_value):
 
     non_zero_error_inds = np.where(estimated_errors > 1e-6)[0]
     Z = np.zeros(len(delta))
-    Z[non_zero_error_inds] = delta[non_zero_error_inds]/estimated_errors[non_zero_error_inds]
+    Z[non_zero_error_inds] = delta[non_zero_error_inds] / estimated_errors[non_zero_error_inds]
     log_EI = np.log(estimated_errors) + norm.logpdf(Z) + np.log(1 + Z * np.exp(norm.logcdf(Z) - norm.logpdf(Z)))
     return log_EI
 
@@ -33,8 +33,9 @@ def expected_improvement(mean_values, std_values, opt_values):
     EI = improvement * norm.cdf(improvement / std_values) + std_values * norm.pdf(improvement / std_values)
     return EI
 
-def get_new_point(model, lower_bounds, upper_bounds, 
-                  data=None, multistart=10, criterion='ei', k=1, random_state=None):
+
+def get_new_point(model, lower_bounds, upper_bounds, data=None,
+                  multistart=10, criterion='ei', k=1, seed=None):
     """
     Parameters:
         model - GP model of the objective function
@@ -44,18 +45,18 @@ def get_new_point(model, lower_bounds, upper_bounds,
         criterion - aqcuisition function, by default log EI
         k - parameter of the LowerConfidenceBound function
         random_state - np.random.RandomState
-        
-    Returns
-        tuple - argmin of the objective function and min value of the objective 
-    """
-    if random_state is None:
-        random_state = np.random.RandomState()
 
+    Returns
+        tuple - argmin of the objective function and min value of the objective
+    """
+    if seed is not None:
+        np.random.seed(seed)
     lower_bounds = np.array(lower_bounds).reshape(1, -1)
     upper_bounds = np.array(upper_bounds).reshape(1, -1)
-    
+
     # 1. Generate inital X points (number of points == multistart) in [lower_bounds, upper_bounds]
-    random_initial_points = np.random.rand(multistart, len(lower_bounds)) * (upper_bounds - lower_bounds) + lower_bounds
+    random_initial_points = np.random.uniform(lower_bounds, upper_bounds,
+                                              size=(multistart, lower_bounds.shape[1]))
 
     def objective(x):
         if x.ndim == 1:
@@ -70,8 +71,8 @@ def get_new_point(model, lower_bounds, upper_bounds,
             raise NotImplementedError('Criterion is not implemented!')
 
     criterion_value = objective(random_initial_points)
-    
-    # 2. From each points from x_random run L-BFGS optimization algorithm, 
+
+    # 2. From each points from x_random run L-BFGS optimization algorithm,
     #    choose the best result and return it
     #    Use function minimize: minimize(objective, x_init, method='L-BFGS-B',
     #                                    bounds=np.vstack((lb, ub)).T)
@@ -84,24 +85,26 @@ def get_new_point(model, lower_bounds, upper_bounds,
         if result.fun < best_value:
             best_value = result.fun
             best_result = result
-    
+
     return best_result.x, best_result.fun
 
-def optimization_step(training_points, training_values, 
-                      kernel, objective, 
-                      lower_bounds=None, upper_bounds=None, 
+
+def optimization_step(training_points, training_values,
+                      kernel, objective,
+                      lower_bounds=None, upper_bounds=None,
                       criterion='ei', k=1):
     model = GPy.models.GPRegression(training_points, training_values, kernel)
     model.optimize_restarts(num_restarts=10, verbose=False)
 
-    new_point, criterion_value = get_new_point(model, data=(training_points, training_values), 
-                                           lower_bounds=lower_bounds, upper_bounds=upper_bounds, 
-                                           criterion=criterion, k=k)
+    new_point, criterion_value = get_new_point(model, data=(training_points, training_values),
+                                               lower_bounds=lower_bounds, upper_bounds=upper_bounds,
+                                               criterion=criterion, k=k)
 
     new_point = new_point.reshape(1, -1)
     training_points = np.vstack([training_points, new_point])
     training_values = np.vstack([training_values, np.asarray(objective(new_point)).reshape(1, -1)])
     return training_points, training_values, model
+
 
 def plot1d(x_train, y_train, model, objective, x_new, criterion_value):
     x_grid = np.linspace(0, 1, 100).reshape(-1, 1)
@@ -183,7 +186,6 @@ def demo_2d(n_init, budget, kernel, save_path='./library/2d_demo.mp4'):
     x = np.hstack((x[0].reshape(-1, 1), x[1].reshape(-1, 1)))
     y = f2d(x)
 
-
     def get_model_values(model, x, x_train):
         prediction, variance = model.predict(x)
         std = np.sqrt(variance).ravel()
@@ -192,7 +194,6 @@ def demo_2d(n_init, budget, kernel, save_path='./library/2d_demo.mp4'):
 
         values = [prediction, y, log_EI]
         return values
-
 
     values = get_model_values(model, x, x_train)
     history = [y_train.min()]
@@ -224,7 +225,6 @@ def demo_2d(n_init, budget, kernel, save_path='./library/2d_demo.mp4'):
     axes.ravel()[-1].set_xlim([n_init - 1, n_init + budget])
     axes.ravel()[-1].set_ylim([0, 0.0073])
     figure.tight_layout()
-
 
     # Define function that updates figure
     def update_fig(iteration):
@@ -260,8 +260,6 @@ def demo_2d(n_init, budget, kernel, save_path='./library/2d_demo.mp4'):
         convergence_plot[0].set_data(range(n_init, y_train.shape[0] + 1), history)
 
         return [*heatmaps, *scatters, *new_point_scatters, *convergence_plot]
-
-
 
     anim = animation.FuncAnimation(figure, update_fig,
                                    blit=False,
